@@ -4,11 +4,11 @@
 #include <mutex>
 #include <vector>
 
-#include <signals/NonCopyable.hpp>
-
 /// The follwoing structs allow for variable number of placeholders in a std::bind call based off the number of
 /// parameters.
 /// [[[ PlaceholderTemplate ---------------------------------------------------
+
+namespace moment {
 
 /// struct to aid in std::placeholder expansion
 /// @note Used to convert a size_t to a std::placeholder value
@@ -16,19 +16,24 @@ template <std::size_t>
 struct PlaceholderTemplate {
 };
 
+} // namespace moment
+
 namespace std {
+
 /// is_placeholder template specialization to convert an index to a placeholder type.
 /// @note The off by one is since std::placeholders are 1 indexed not 0 indexed.
 template <std::size_t N>
-struct is_placeholder<PlaceholderTemplate<N>> : integral_constant<std::size_t, N + 1> {
+struct is_placeholder<moment::PlaceholderTemplate<N>> : integral_constant<std::size_t, N + 1> {
 };
+
 } // namespace std
 
-/// ]]] placeholderTemplate ---------------------------------------------------
+/// ]]] PlaceholderTemplate ---------------------------------------------------
 
 namespace moment {
 
 /// Generic template declarations
+
 template <typename>
 class Connection;
 
@@ -37,19 +42,34 @@ class Signal;
 
 /// [[[ Signal ----------------------------------------------------------------
 
+/// A signal class that defines a callable function that will notify all connected slots.
 template <typename Ret, typename... Params>
-class Signal<Ret(Params...)> : public NonCopyable {
+class Signal<Ret(Params...)> {
 public:
-    using Slot = std::function<Ret(Params...)>;
+    using SlotProto = Ret(Params...);
+    using Slot = std::function<SlotProto>;
 
     ~Signal();
+    Signal() = default;
 
+    /// Connect a member function to this signal.
+    /// @tparam Obj The object type.
+    /// @tparam MemFunc The member fuction type.
+    /// @param object The object to bind to.
+    /// @param memFunc The member function to bind to.
+    /// @returns The connection created.
     template <typename Obj, typename MemFunc>
     Connection<Ret(Params...)> connect(Obj* object, MemFunc Obj::*memFunc);
+
+    /// Connect a slot to this signal.
+    /// @returns The connection created.
     Connection<Ret(Params...)> connect(Slot&& slot);
 
-    bool disconnect(Connection<Ret(Params...)>& connection);
+    /// Disonnect this connection from this signal.
+    /// @returns True if disconnected, false otherwise.
+    bool disconnect(Connection<SlotProto>& connection);
 
+    /// Emit the signal.
     template <typename... Args>
     void operator()(Args...);
 
@@ -57,13 +77,13 @@ private:
     using StateLock = std::lock_guard<std::mutex>;
 
     template <typename Obj, typename MemFunc, std::size_t... Indices>
-    Connection<Ret(Params...)> connectBind(Obj* object, MemFunc Obj::*memFunc, std::index_sequence<Indices...>);
-    Connection<Ret(Params...)> connectLocked(StateLock&, Slot&& slot);
+    Connection<SlotProto> connectBind(Obj* object, MemFunc Obj::*memFunc, std::index_sequence<Indices...>);
+    Connection<SlotProto> connectLocked(StateLock&, Slot&& slot);
 
-    bool disconnectLocked(StateLock&, Connection<Ret(Params...)>& connection);
+    bool disconnectLocked(StateLock&, Connection<SlotProto>& connection);
 
     mutable std::mutex _stateMutex;
-    std::vector<Connection<Ret(Params...)>> _connections;
+    std::vector<Connection<SlotProto>> _connections;
 };
 
 template <typename Ret, typename... Params>
@@ -140,26 +160,32 @@ inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectLocked(StateLoc
 
 /// ]]] Connection ------------------------------------------------------------
 
+/// A connection class that references a signal-slot connection.
 template <typename Ret, typename... Params>
 class Connection<Ret(Params...)> {
 public:
     using SlotProto = Ret(Params...);
-    using Slot = std::function<Ret(Params...)>;
+    using Slot = std::function<SlotProto>;
 
-    bool operator==(const Connection&) const;
+    Connection(Signal<SlotProto>* signal, Slot&& slot, uint32_t id);
     Connection(const Connection& other);
     Connection(Connection&& other);
     Connection& operator=(const Connection& other);
     Connection& operator=(Connection&& other);
+    bool operator==(const Connection&) const;
 
+    /// Disconnect this connection from the signal.
+    /// @returns True if the connection was disconnect, false otherwise.
     bool disconnect();
-    bool valid() const;
 
-    Connection(Signal<SlotProto>* signal, Slot&& slot, uint32_t id);
+    /// Get the validity of the connection
+    /// @returns true if the connection is valid, false otherwise.
+    bool valid() const;
 
 private:
     friend class Signal<SlotProto>;
 
+    /// Call the slot
     template <typename... Args>
     void call(Args... args);
 
