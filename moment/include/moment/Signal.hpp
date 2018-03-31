@@ -4,8 +4,8 @@
 #include <mutex>
 #include <vector>
 
-/// The follwoing structs allow for variable number of placeholders in a std::bind call based off the number of
-/// parameters.
+/// The follwoing structs allow for a variable number of placeholders in a
+/// std::bind call based off the number of parameters to the signal.
 /// [[[ PlaceholderTemplate ---------------------------------------------------
 
 namespace moment {
@@ -21,7 +21,7 @@ struct PlaceholderTemplate {
 namespace std {
 
 /// is_placeholder template specialization to convert an index to a placeholder type.
-/// @note The off by one is since std::placeholders are 1 indexed not 0 indexed.
+/// @note The off by one is due to std::placeholders being 1 indexed rather 0 indexed.
 template <std::size_t N>
 struct is_placeholder<moment::PlaceholderTemplate<N>> : integral_constant<std::size_t, N + 1> {
 };
@@ -32,17 +32,19 @@ struct is_placeholder<moment::PlaceholderTemplate<N>> : integral_constant<std::s
 
 namespace moment {
 
-/// Generic template declarations
-
-template <typename>
-class Connection;
+/// Generic template declarations. Signal and Connection are template specializations to allow for
+/// Signal<void(int, int)> vs Signal<void, int, int>
 
 template <typename>
 class Signal;
 
+template <typename>
+class Connection;
+
 /// [[[ Signal ----------------------------------------------------------------
 
 /// A signal class that defines a callable function that will notify all connected slots.
+/// @note Return values will be ignored
 template <typename Ret, typename... Params>
 class Signal<Ret(Params...)> {
 public:
@@ -50,9 +52,8 @@ public:
     using Slot = std::function<SlotProto>;
 
     ~Signal();
-    Signal() = default;
 
-    /// Connect a member function to this signal.
+    /// Connect a member function via c function ptr to this signal.
     /// @tparam Obj The object type.
     /// @tparam MemFunc The member fuction type.
     /// @param object The object to bind to.
@@ -61,25 +62,44 @@ public:
     template <typename Obj, typename MemFunc>
     Connection<Ret(Params...)> connect(Obj* object, MemFunc Obj::*memFunc);
 
+    /// Connect a member function via std::mem_fn to this signal.
+    /// @tparam Obj The object type.
+    /// @tparam MemFunc The member fuction type.
+    /// @param object The object to bind to.
+    /// @param memFunc The member function to bind to.
+    /// @returns The connection created.
+    template <typename Obj, typename MemFunc>
+    Connection<Ret(Params...)> connect(Obj* object, MemFunc&& memFunc);
+
     /// Connect a slot to this signal.
+    /// @param slot The slot to connect the signal to.
     /// @returns The connection created.
     Connection<Ret(Params...)> connect(Slot&& slot);
 
     /// Disonnect this connection from this signal.
+    /// @param connection The connection to disconnect from the signal.
     /// @returns True if disconnected, false otherwise.
     bool disconnect(Connection<SlotProto>& connection);
 
     /// Emit the signal.
+    /// @tparam Args The arguments to the slot
     template <typename... Args>
     void operator()(Args...);
 
 private:
     using StateLock = std::lock_guard<std::mutex>;
 
+    /// Connect a member function
     template <typename Obj, typename MemFunc, std::size_t... Indices>
     Connection<SlotProto> connectBind(Obj* object, MemFunc Obj::*memFunc, std::index_sequence<Indices...>);
+    /// Connect a member function
+    template <typename Obj, typename MemFunc>
+    Connection<SlotProto> connectBind(Obj* object, MemFunc&& memFunc);
+    /// Connect a slot to this signal under a lock.
+    /// @returns The connection created.
     Connection<SlotProto> connectLocked(StateLock&, Slot&& slot);
-
+    /// Disconnect a slot from this signal under a lock.
+    /// @returns True if disconnected, false otherwise.
     bool disconnectLocked(StateLock&, Connection<SlotProto>& connection);
 
     mutable std::mutex _stateMutex;
@@ -114,12 +134,10 @@ inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connect(Obj* object, M
 }
 
 template <typename Ret, typename... Params>
-template <typename Obj, typename MemFunc, std::size_t... Indices>
-inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectBind(Obj* object,
-                                                                      MemFunc Obj::*memFunc,
-                                                                      std::index_sequence<Indices...>)
+template <typename Obj, typename MemFunc>
+inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connect(Obj* object, MemFunc&& memFunc)
 {
-    return connect(std::bind(memFunc, object, PlaceholderTemplate<Indices>{}...));
+    return connectBind(object, std::move(memFunc));
 }
 
 template <typename Ret, typename... Params>
@@ -130,10 +148,19 @@ inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connect(Slot&& slot)
 }
 
 template <typename Ret, typename... Params>
-inline bool Signal<Ret(Params...)>::disconnect(Connection<Ret(Params...)>& connection)
+template <typename Obj, typename MemFunc, std::size_t... Indices>
+inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectBind(Obj* object,
+                                                                      MemFunc Obj::*memFunc,
+                                                                      std::index_sequence<Indices...>)
 {
-    StateLock lock{_stateMutex};
-    return disconnectLocked(lock, connection);
+    return connect(std::bind(memFunc, object, PlaceholderTemplate<Indices>{}...));
+}
+
+template <typename Ret, typename... Params>
+template <typename Obj, typename MemFunc>
+inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectBind(Obj* object, MemFunc&& memFunc)
+{
+    return connect([object, memFunc{std::move(memFunc)}](Params... params) { memFunc(object, params...); });
 }
 
 template <typename Ret, typename... Params>
@@ -152,13 +179,20 @@ template <typename Ret, typename... Params>
 inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectLocked(StateLock&, Slot&& slot)
 {
     static uint32_t id = 0u;
-    auto I = _connections.emplace_back(this, std::move(slot), id++);
-    return I;
+    _connections.push_back({this, std::move(slot), id++});
+    return _connections.back();
+}
+
+template <typename Ret, typename... Params>
+inline bool Signal<Ret(Params...)>::disconnect(Connection<Ret(Params...)>& connection)
+{
+    StateLock lock{_stateMutex};
+    return disconnectLocked(lock, connection);
 }
 
 /// ]]] Signal ----------------------------------------------------------------
 
-/// ]]] Connection ------------------------------------------------------------
+/// [[[ Connection ------------------------------------------------------------
 
 /// A connection class that references a signal-slot connection.
 template <typename Ret, typename... Params>
@@ -167,11 +201,6 @@ public:
     using SlotProto = Ret(Params...);
     using Slot = std::function<SlotProto>;
 
-    Connection(Signal<SlotProto>* signal, Slot&& slot, uint32_t id);
-    Connection(const Connection& other);
-    Connection(Connection&& other);
-    Connection& operator=(const Connection& other);
-    Connection& operator=(Connection&& other);
     bool operator==(const Connection&) const;
 
     /// Disconnect this connection from the signal.
@@ -184,83 +213,36 @@ public:
 
 private:
     friend class Signal<SlotProto>;
+    class SharedConnectionData;
 
-    /// Call the slot
+    /// Construct a connection
+    Connection(Signal<SlotProto>* signal, Slot&& slot, uint32_t id);
+
+    /// Call the slot.
     template <typename... Args>
     void call(Args... args);
 
+    /// Invalidate the connection.
     void invalidate();
 
-    class SharedConnectionData {
-    public:
-        SharedConnectionData(Slot&& slot);
-
-        template <typename... Args>
-        void call(Args... args);
-
-        bool valid() const;
-
-        void invalidate();
-
-    private:
-        using StateLock = std::lock_guard<std::mutex>;
-
-        mutable std::mutex _stateMutex;
-        bool _valid{true};
-        Slot _slot;
-    };
+    /// Get the connection id.
+    uint32_t id() const;
 
     std::shared_ptr<SharedConnectionData> _sharedConnectionData;
     Signal<SlotProto>* _signal;
-    uint32_t _id;
 };
 
 template <typename Ret, typename... Params>
 inline Connection<Ret(Params...)>::Connection(Signal<SlotProto>* signal, Slot&& slot, uint32_t id)
-: _sharedConnectionData{std::make_shared<SharedConnectionData>(std::move(slot))}
+: _sharedConnectionData{std::make_shared<SharedConnectionData>(std::move(slot), id)}
 , _signal(signal)
-, _id{id}
 {
 }
 
 template <typename Ret, typename... Params>
 inline bool Connection<Ret(Params...)>::operator==(const Connection& other) const
 {
-    return _id == other._id;
-}
-
-template <typename Ret, typename... Params>
-inline Connection<Ret(Params...)>::Connection(const Connection& other)
-: _sharedConnectionData{other._sharedConnectionData}
-, _signal{other._signal}
-, _id{other._id}
-{
-}
-
-template <typename Ret, typename... Params>
-inline Connection<Ret(Params...)>::Connection(Connection&& other)
-: _sharedConnectionData{std::move(other._sharedConnectionData)}
-, _signal{other._signal}
-, _id{other._id}
-{
-}
-
-template <typename Ret, typename... Params>
-inline Connection<Ret(Params...)>& Connection<Ret(Params...)>::operator=(const Connection& other)
-{
-    _sharedConnectionData = other._sharedConnectionData;
-    _signal = other._signal;
-    _id = other._id;
-    return *this;
-}
-
-template <typename Ret, typename... Params>
-inline Connection<Ret(Params...)>& Connection<Ret(Params...)>::operator=(Connection&& other)
-{
-    _sharedConnectionData = std::move(other._sharedConnectionData);
-    _signal = other._signal;
-    _id = other._id;
-    return *this;
+    return id() == other.id();
 }
 
 template <typename Ret, typename... Params>
@@ -289,8 +271,53 @@ inline void Connection<Ret(Params...)>::invalidate()
 }
 
 template <typename Ret, typename... Params>
-inline Connection<Ret(Params...)>::SharedConnectionData::SharedConnectionData(Slot&& slot)
+inline uint32_t Connection<Ret(Params...)>::id() const
+{
+    return _sharedConnectionData->id();
+}
+
+/// ]]] Connection ------------------------------------------------------------
+
+/// [[[ Connection::SharedConnectionData --------------------------------------
+
+/// Class containing data shared between equivalint connections
+template <typename Ret, typename... Params>
+class Connection<Ret(Params...)>::SharedConnectionData {
+public:
+    SharedConnectionData(Slot&& slot, uint32_t id);
+
+    /// Non-copyable / Non-movable
+    SharedConnectionData(const SharedConnectionData&) = delete;
+    SharedConnectionData(SharedConnectionData&&) = delete;
+    SharedConnectionData& operator=(const SharedConnectionData&) = delete;
+    SharedConnectionData& operator=(SharedConnectionData&&) = delete;
+
+    /// Call the slot.
+    template <typename... Args>
+    void call(Args... args);
+
+    /// Get the validity of the connection.
+    bool valid() const;
+
+    /// Invalidate the connection.
+    void invalidate();
+
+    /// Get the id of the connection.
+    uint32_t id() const;
+
+private:
+    using StateLock = std::lock_guard<std::mutex>;
+
+    mutable std::mutex _stateMutex;
+    bool _valid{true};
+    Slot _slot;
+    uint32_t _id;
+};
+
+template <typename Ret, typename... Params>
+inline Connection<Ret(Params...)>::SharedConnectionData::SharedConnectionData(Slot&& slot, uint32_t id)
 : _slot{std::move(slot)}
+, _id{id}
 {
 }
 
@@ -299,6 +326,7 @@ template <typename... Args>
 inline void Connection<Ret(Params...)>::SharedConnectionData::call(Args... args)
 {
     StateLock lock{_stateMutex};
+    assert(_valid);
     _slot(std::forward<Args>(args)...);
 }
 
@@ -316,6 +344,13 @@ inline void Connection<Ret(Params...)>::SharedConnectionData::invalidate()
     _valid = false;
 }
 
-/// [[[ Connection ------------------------------------------------------------
+template <typename Ret, typename... Params>
+inline uint32_t Connection<Ret(Params...)>::SharedConnectionData::id() const
+{
+    StateLock lock{_stateMutex};
+    return _id;
+}
+
+/// ]]] Connection::SharedConnectionData --------------------------------------
 
 } // namespace moment

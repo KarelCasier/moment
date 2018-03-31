@@ -6,12 +6,18 @@ class Emmiter {
 public:
     ~Emmiter() { onDestroy(); }
 
+    void print(int x) { onPrint(x); }
+
     moment::Signal<void()> onDestroy;
+    moment::Signal<void(int)> onPrint;
 };
 
 class Receiver {
 public:
-    void emmiterDestroyed() { std::cout << "Emmiter::OnDestroy signal called." << std::endl; }
+    void onEmmiterDestroyed() { std::cout << "Emmiter::OnDestroy signal called." << std::endl; }
+
+    void onPrint() { /* Never called */ }
+    void onPrint(int x) { std::cout << x << std::endl; }
 };
 
 int main(int /*argv*/, char** /*argc*/)
@@ -53,9 +59,17 @@ int main(int /*argv*/, char** /*argc*/)
         emmiter.onDestroy.connect([]() { std::cout << "Emmiter::OnDestroy signal called." << std::endl; });
 
         // Connect a member function
-        emmiter.onDestroy.connect(&receiver, &Receiver::emmiterDestroyed);
-
+        emmiter.onDestroy.connect(&receiver, &Receiver::onEmmiterDestroyed);
     } // calls Emitter::onDestroy() thus calling both the lambda and the member function
+
+    /////////////////////////////////////////////////////////////////////////////
+    // Signal and classes                                                      //
+    // connecting to a signal when a member function has overloaded parameters //
+    /////////////////////////////////////////////////////////////////////////////
+    Emmiter emmiter{};
+    // Connect a member function that has overloads
+    emmiter.onPrint.connect(&receiver, std::mem_fn<void(int)>(&Receiver::onPrint));
+    emmiter.print(42); // Calls receiver.onPrint(int)
 
     return 0;
 }
