@@ -84,6 +84,25 @@ TEST(Signal, lambdaWithParams)
     /// Assert
 }
 
+TEST(Signal, multipleLambdaWithParams)
+{
+    /// Arrange
+    Signal<void(int, std::string)> sig{};
+    StrictMock<MockCallback> callback{};
+    StrictMock<MockCallback> callback2{};
+    sig.connect([&callback](int i, std::string s) { callback.intAndStringCallback(i, s); });
+    sig.connect([&callback2](int i, std::string s) { callback2.intAndStringCallback(i, s); });
+    auto arg1 = 5;
+    auto arg2 = std::string{"Test"};
+
+    /// Act
+    EXPECT_CALL(callback, intAndStringCallback(Eq(arg1), Eq(arg2)));
+    EXPECT_CALL(callback2, intAndStringCallback(Eq(arg1), Eq(arg2)));
+    sig(arg1, arg2);
+
+    /// Assert
+}
+
 TEST(Signal, memberFunctionNoParams)
 {
     /// Arrange
@@ -167,6 +186,22 @@ TEST(Signal, disconnectConnectionCallbackNotCalled)
 
     /// Act
     sig.disconnect(connection);
+    sig();
+
+    /// Assert
+    ASSERT_FALSE(connection.valid());
+}
+
+TEST(Signal, copyConnectionDisconnectNotValid)
+{
+    /// Arrange
+    Signal<void()> sig{};
+    StrictMock<MockCallback> callback{};
+    auto connection = sig.connect([&callback]() { callback.voidCallback(); });
+
+    /// Act
+    auto copyConnection = connection;
+    copyConnection.disconnect();
     sig();
 
     /// Assert

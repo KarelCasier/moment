@@ -122,7 +122,7 @@ inline void Signal<Ret(Params...)>::operator()(Args... args)
 {
     StateLock lock{_stateMutex};
     for (auto& connection : _connections) {
-        connection.call(std::forward<Args>(args)...);
+        connection.call(args...);
     }
 }
 
