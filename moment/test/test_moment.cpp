@@ -15,12 +15,18 @@ public:
     virtual ~ICallback() = default;
     virtual void voidCallback() = 0;
     virtual void intAndStringCallback(int, std::string) = 0;
+
+    virtual void overloadedCallback() = 0;
+    virtual void overloadedCallback(int) = 0;
 };
 
 class MockCallback : public ICallback {
 public:
     MOCK_METHOD0(voidCallback, void());
     MOCK_METHOD2(intAndStringCallback, void(int, std::string));
+
+    MOCK_METHOD0(overloadedCallback, void());
+    MOCK_METHOD1(overloadedCallback, void(int));
 };
 
 class MemberCallbacks {
@@ -30,9 +36,13 @@ public:
     {
         EXPECT_CALL(mockCallback, intAndStringCallback(Eq(arg1), Eq(arg2)));
     }
+    void expectOverloadedCallback() { EXPECT_CALL(mockCallback, overloadedCallback()); }
+    void expectOverloadedCallback(int arg) { EXPECT_CALL(mockCallback, overloadedCallback(arg)); }
 
     void voidCallback() { mockCallback.voidCallback(); }
     void intAndStringCallback(int arg1, std::string arg2) { mockCallback.intAndStringCallback(arg1, arg2); }
+    void overloadedCallback() { mockCallback.overloadedCallback(); }
+    void overloadedCallback(int arg) { mockCallback.overloadedCallback(arg); }
 
 private:
     StrictMock<MockCallback> mockCallback;
@@ -102,6 +112,65 @@ TEST(Signal, memberFunctionWithParams)
     sig(arg1, arg2);
 
     /// Assert
+}
+
+TEST(Signal, memberOverloadedFunctionNoParams)
+{
+    /// Arrange
+    Signal<void()> sig{};
+    MemberCallbacks callback{};
+    sig.connect(&callback, std::mem_fn<void()>(&MemberCallbacks::overloadedCallback));
+
+    /// Act
+    callback.expectOverloadedCallback();
+    sig();
+
+    /// Assert
+}
+
+TEST(Signal, memberOverloadedFunctionWithParams)
+{
+    /// Arrange
+    Signal<void(int)> sig{};
+    MemberCallbacks callback{};
+    sig.connect(&callback, std::mem_fn<void(int)>(&MemberCallbacks::overloadedCallback));
+    auto arg = 5;
+
+    /// Act
+    callback.expectOverloadedCallback(arg);
+    sig(arg);
+
+    /// Assert
+}
+
+TEST(Signal, connectionDisconnectCallbackNotCalled)
+{
+    /// Arrange
+    Signal<void()> sig{};
+    StrictMock<MockCallback> callback{};
+    auto connection = sig.connect([&callback]() { callback.voidCallback(); });
+
+    /// Act
+    connection.disconnect();
+    sig();
+
+    /// Assert
+    ASSERT_FALSE(connection.valid());
+}
+
+TEST(Signal, disconnectConnectionCallbackNotCalled)
+{
+    /// Arrange
+    Signal<void()> sig{};
+    StrictMock<MockCallback> callback{};
+    auto connection = sig.connect([&callback]() { callback.voidCallback(); });
+
+    /// Act
+    sig.disconnect(connection);
+    sig();
+
+    /// Assert
+    ASSERT_FALSE(connection.valid());
 }
 
 } // namespace moment
