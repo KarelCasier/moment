@@ -2,7 +2,11 @@ cmake_minimum_required(VERSION 3.6 FATAL_ERROR)
 set(CMAKE_CXX_COMPILER /usr/local/opt/llvm/bin/clang++)
 project(frontier VERSION 0.1 LANGUAGES CXX)
 
+add_subdirectory(ext/googletest EXCLUDE_FROM_ALL)
+
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
+
+enable_testing()
 
 set(CMAKE_CXX17_STANDARD_COMPILE_OPTION "-std=c++17")
 set(CMAKE_CXX_STANDARD 17)
@@ -19,3 +23,4 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 
 add_subdirectory(moment)
+add_subdirectory(moment/test)

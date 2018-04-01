@@ -26,6 +26,13 @@ cmake .. -G Ninja
 ninja
 ```
 
+#### tests
+
+After the build step:
+```sh
+ninja test
+```
+
 #### run
 
 ```sh
