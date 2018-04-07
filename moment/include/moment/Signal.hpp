@@ -76,10 +76,14 @@ public:
     /// @returns The connection created.
     Connection<Ret(Params...)> connect(Slot&& slot);
 
-    /// Disonnect this connection from this signal.
+    /// Disonnect a connection from this signal.
     /// @param connection The connection to disconnect from the signal.
     /// @returns True if disconnected, false otherwise.
     bool disconnect(Connection<SlotProto>& connection);
+
+    /// Disonnect all connections from this signal.
+    /// @returns True if disconnected, false otherwise.
+    void disconnect();
 
     /// Emit the signal.
     /// @tparam Args The arguments to the slot
@@ -101,6 +105,8 @@ private:
     /// Disconnect a slot from this signal under a lock.
     /// @returns True if disconnected, false otherwise.
     bool disconnectLocked(StateLock&, Connection<SlotProto>& connection);
+    /// Disconnect all slots from this signal under a lock.
+    void disconnectAllLocked(StateLock&);
 
     mutable std::mutex _stateMutex;
     std::vector<Connection<SlotProto>> _connections;
@@ -110,10 +116,7 @@ template <typename Ret, typename... Params>
 inline Signal<Ret(Params...)>::~Signal()
 {
     StateLock lock{_stateMutex};
-    for (auto& connection : _connections) {
-        connection.invalidate();
-    }
-    _connections.clear();
+    disconnectAllLocked(lock);
 }
 
 template <typename Ret, typename... Params>
@@ -145,6 +148,20 @@ inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connect(Slot&& slot)
 {
     StateLock lock{_stateMutex};
     return connectLocked(lock, std::move(slot));
+}
+
+template <typename Ret, typename... Params>
+inline bool Signal<Ret(Params...)>::disconnect(Connection<Ret(Params...)>& connection)
+{
+    StateLock lock{_stateMutex};
+    return disconnectLocked(lock, connection);
+}
+
+template <typename Ret, typename... Params>
+inline void Signal<Ret(Params...)>::disconnect()
+{
+    StateLock lock{_stateMutex};
+    disconnectAllLocked(lock);
 }
 
 template <typename Ret, typename... Params>
@@ -184,10 +201,12 @@ inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectLocked(StateLoc
 }
 
 template <typename Ret, typename... Params>
-inline bool Signal<Ret(Params...)>::disconnect(Connection<Ret(Params...)>& connection)
+inline void Signal<Ret(Params...)>::disconnectAllLocked(StateLock&)
 {
-    StateLock lock{_stateMutex};
-    return disconnectLocked(lock, connection);
+    for (auto& connection : _connections) {
+        connection.invalidate();
+    }
+    _connections.clear();
 }
 
 /// ]]] Signal ----------------------------------------------------------------

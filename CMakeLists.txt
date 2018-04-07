@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.6 FATAL_ERROR)
 set(CMAKE_CXX_COMPILER /usr/local/opt/llvm/bin/clang++)
 project(frontier VERSION 0.1 LANGUAGES CXX)
 
-add_subdirectory(ext/googletest EXCLUDE_FROM_ALL)
+option(MOMENT_BUILD_TESTS "Enable testing" ON)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
 
@@ -23,4 +23,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 
 add_subdirectory(moment)
-add_subdirectory(moment/test)
+
+if(MOMENT_BUILD_TESTS)
+    add_subdirectory(ext/googletest EXCLUDE_FROM_ALL)
+    add_subdirectory(moment/test)
+endif()
+
