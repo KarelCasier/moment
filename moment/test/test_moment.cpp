@@ -192,7 +192,22 @@ TEST(Signal, disconnectConnectionCallbackNotCalled)
     ASSERT_FALSE(connection.valid());
 }
 
-TEST(Signal, copyConnectionDisconnectNotValid)
+TEST(Signal, copyConnectedConnectionBothValid)
+{
+    /// Arrange
+    Signal<void()> sig{};
+    StrictMock<MockCallback> callback{};
+    auto connection = sig.connect([&callback]() { callback.voidCallback(); });
+
+    /// Act
+    auto copyConnection = connection;
+
+    /// Assert
+    ASSERT_TRUE(connection.valid());
+    ASSERT_TRUE(copyConnection.valid());
+}
+
+TEST(Signal, copyConnectionAndDisconnectBothInvalid)
 {
     /// Arrange
     Signal<void()> sig{};
@@ -207,6 +222,33 @@ TEST(Signal, copyConnectionDisconnectNotValid)
     /// Assert
     ASSERT_FALSE(connection.valid());
     ASSERT_FALSE(copyConnection.valid());
+}
+
+TEST(Signal, moveSignal_NewSignalConnectionsWork)
+{
+    /// Arrange
+    Signal<void()> sig{};
+    StrictMock<MockCallback> callback{};
+    auto connection = sig.connect([&callback]() { callback.voidCallback(); });
+
+    /// Act
+    Signal<void()> movedSig = std::move(sig);
+    EXPECT_CALL(callback, voidCallback());
+    movedSig();
+
+    /// Assert
+}
+
+TEST(Signal, moveSignal_CallOldSignalFails)
+{
+    /// Arrange
+    Signal<void()> sig{};
+    StrictMock<MockCallback> callback{};
+    auto connection = sig.connect([&callback]() { callback.voidCallback(); });
+
+    /// Act && Assert
+    Signal<void()> movedSig = std::move(sig);
+    ASSERT_DEATH({sig();}, "Assertion failed*");
 }
 
 } // namespace moment

@@ -3,6 +3,7 @@
 #include <functional>
 #include <mutex>
 #include <vector>
+#include <iostream>
 
 /// The follwoing structs allow for a variable number of placeholders in a
 /// std::bind call based off the number of parameters to the signal.
@@ -52,6 +53,15 @@ public:
     using Slot = std::function<SlotProto>;
 
     ~Signal();
+    Signal() = default;
+
+    /// Movable
+    Signal(Signal&& other);
+    Signal& operator=(Signal&& other);
+
+    /// Non-copyable
+    Signal(const Signal&) = delete;
+    Signal& operator=(const Signal&) = delete;
 
     /// Connect a member function via c function ptr to this signal.
     /// @tparam Obj The object type.
@@ -92,6 +102,8 @@ public:
 
 private:
     using StateLock = std::lock_guard<std::mutex>;
+    using ConnectionData = typename Connection<SlotProto>::ConnectionData;
+    using SharedConnectionData = std::shared_ptr<ConnectionData>;
 
     /// Connect a member function
     template <typename Obj, typename MemFunc, std::size_t... Indices>
@@ -101,15 +113,18 @@ private:
     Connection<SlotProto> connectBind(Obj* object, MemFunc&& memFunc);
     /// Connect a slot to this signal under a lock.
     /// @returns The connection created.
-    Connection<SlotProto> connectLocked(StateLock&, Slot&& slot);
+    Connection<SlotProto> connectLocked(const StateLock&, Slot&& slot);
     /// Disconnect a slot from this signal under a lock.
     /// @returns True if disconnected, false otherwise.
-    bool disconnectLocked(StateLock&, Connection<SlotProto>& connection);
+    bool disconnectLocked(const StateLock&, Connection<SlotProto>& connection);
     /// Disconnect all slots from this signal under a lock.
-    void disconnectAllLocked(StateLock&);
+    void disconnectAllLocked(const StateLock&);
+    /// Calls @p func with each connection.
+    void forEachConnection(const StateLock&, std::function<void(ConnectionData&)>&& func);
 
     mutable std::mutex _stateMutex;
-    std::vector<Connection<SlotProto>> _connections;
+    std::vector<SharedConnectionData> _connections;
+    bool _valid{true};
 };
 
 template <typename Ret, typename... Params>
@@ -120,13 +135,41 @@ inline Signal<Ret(Params...)>::~Signal()
 }
 
 template <typename Ret, typename... Params>
+inline Signal<Ret(Params...)>::Signal(Signal&& other)
+{
+    StateLock thisLock{_stateMutex};
+    StateLock otherLock{other._stateMutex};
+    disconnectAllLocked(thisLock);
+    _connections = std::move(other._connections);
+    other._connections.clear();
+    other._valid = false;
+    _valid = true;
+    forEachConnection(thisLock, [this](auto& connection) { connection.updateSignal(this); });
+}
+
+template <typename Ret, typename... Params>
+inline Signal<Ret(Params...)>& Signal<Ret(Params...)>::operator=(Signal&& other)
+{
+    StateLock thisLock{_stateMutex};
+    StateLock otherLock{other._stateMutex};
+    disconnectAllLocked(thisLock);
+    _connections = std::move(other._connections);
+    other._connections.clear();
+    other._valid = false;
+    _valid = true;
+    forEachConnection(thisLock, [this](auto& connection) { connection.updateSignal(this); });
+    return *this;
+}
+
+template <typename Ret, typename... Params>
 template <typename... Args>
 inline void Signal<Ret(Params...)>::operator()(Args... args)
 {
     StateLock lock{_stateMutex};
-    for (auto& connection : _connections) {
-        connection.call(args...);
-    }
+    assert(_valid);
+    forEachConnection(lock, [tup{std::make_tuple(std::forward<Args>(args)...)}](auto& connection) {
+        std::apply([&connection](auto const&... args) { connection.call(args...); }, tup);
+    });
 }
 
 template <typename Ret, typename... Params>
@@ -181,11 +224,12 @@ inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectBind(Obj* objec
 }
 
 template <typename Ret, typename... Params>
-inline bool Signal<Ret(Params...)>::disconnectLocked(StateLock&, Connection<Ret(Params...)>& connection)
+inline bool Signal<Ret(Params...)>::disconnectLocked(const StateLock&, Connection<Ret(Params...)>& connection)
 {
-    auto I = std::find(std::begin(_connections), std::end(_connections), connection);
+    assert(_valid);
+    const auto I = std::find(std::begin(_connections), std::end(_connections), connection.sharedData());
     if (I != std::end(_connections)) {
-        connection.invalidate();
+        (*I)->invalidate();
         _connections.erase(I);
         return true;
     }
@@ -193,20 +237,28 @@ inline bool Signal<Ret(Params...)>::disconnectLocked(StateLock&, Connection<Ret(
 }
 
 template <typename Ret, typename... Params>
-inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectLocked(StateLock&, Slot&& slot)
+inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectLocked(const StateLock&, Slot&& slot)
 {
+    assert(_valid);
     static uint32_t id = 0u;
-    _connections.push_back({this, std::move(slot), id++});
-    return _connections.back();
+    auto connection = ConnectionData::buildConnection(this, std::move(slot), id++);
+    _connections.push_back(connection);
+    return {connection};
 }
 
 template <typename Ret, typename... Params>
-inline void Signal<Ret(Params...)>::disconnectAllLocked(StateLock&)
+inline void Signal<Ret(Params...)>::disconnectAllLocked(const StateLock& lock)
 {
-    for (auto& connection : _connections) {
-        connection.invalidate();
-    }
+    forEachConnection(lock, [](auto& connection) { connection.invalidate(); });
     _connections.clear();
+}
+
+template <typename Ret, typename... Params>
+inline void Signal<Ret(Params...)>::forEachConnection(const StateLock&, std::function<void(ConnectionData&)>&& func)
+{
+    for (auto I = std::rbegin(_connections); I != std::rend(_connections); ++I) {
+        func(**I);
+    }
 }
 
 /// ]]] Signal ----------------------------------------------------------------
@@ -232,10 +284,13 @@ public:
 
 private:
     friend class Signal<SlotProto>;
-    class SharedConnectionData;
+    class ConnectionData;
 
-    /// Construct a connection
+    /// Construct a connection from scratch
     Connection(Signal<SlotProto>* signal, Slot&& slot, uint32_t id);
+
+    /// Construct a connection from shared data
+    Connection(std::shared_ptr<ConnectionData> sharedConnectionData);
 
     /// Call the slot.
     template <typename... Args>
@@ -247,16 +302,11 @@ private:
     /// Get the connection id.
     uint32_t id() const;
 
-    std::shared_ptr<SharedConnectionData> _sharedConnectionData;
-    Signal<SlotProto>* _signal;
-};
+    /// Get the shared data.
+    const std::shared_ptr<ConnectionData> sharedData() const;
 
-template <typename Ret, typename... Params>
-inline Connection<Ret(Params...)>::Connection(Signal<SlotProto>* signal, Slot&& slot, uint32_t id)
-: _sharedConnectionData{std::make_shared<SharedConnectionData>(std::move(slot), id)}
-, _signal(signal)
-{
-}
+    std::shared_ptr<ConnectionData> _sharedConnectionData;
+};
 
 template <typename Ret, typename... Params>
 inline bool Connection<Ret(Params...)>::operator==(const Connection& other) const
@@ -267,13 +317,25 @@ inline bool Connection<Ret(Params...)>::operator==(const Connection& other) cons
 template <typename Ret, typename... Params>
 inline bool Connection<Ret(Params...)>::disconnect()
 {
-    return _signal->disconnect(*this);
+    return _sharedConnectionData->disconnect();
 }
 
 template <typename Ret, typename... Params>
 inline bool Connection<Ret(Params...)>::valid() const
 {
     return _sharedConnectionData->valid();
+}
+
+template <typename Ret, typename... Params>
+inline Connection<Ret(Params...)>::Connection(Signal<SlotProto>* signal, Slot&& slot, uint32_t id)
+: _sharedConnectionData{ConnectionData::buildConnection(signal, std::move(slot), id)}
+{
+}
+
+template <typename Ret, typename... Params>
+inline Connection<Ret(Params...)>::Connection(std::shared_ptr<ConnectionData> sharedConnectionData)
+: _sharedConnectionData{std::move(sharedConnectionData)}
+{
 }
 
 template <typename Ret, typename... Params>
@@ -295,21 +357,29 @@ inline uint32_t Connection<Ret(Params...)>::id() const
     return _sharedConnectionData->id();
 }
 
+template <typename Ret, typename... Params>
+inline const std::shared_ptr<typename Connection<Ret(Params...)>::ConnectionData> Connection<
+    Ret(Params...)>::sharedData() const
+{
+    return _sharedConnectionData;
+}
+
 /// ]]] Connection ------------------------------------------------------------
 
-/// [[[ Connection::SharedConnectionData --------------------------------------
+/// [[[ Connection::ConnectionData --------------------------------------
 
 /// Class containing data shared between equivalint connections
 template <typename Ret, typename... Params>
-class Connection<Ret(Params...)>::SharedConnectionData {
+class Connection<Ret(Params...)>::ConnectionData : public std::enable_shared_from_this<ConnectionData> {
 public:
-    SharedConnectionData(Slot&& slot, uint32_t id);
+    /// Connection data should only be held as a shared_ptr (due to the use of shared_from_this)
+    static std::shared_ptr<ConnectionData> buildConnection(Signal<SlotProto>* signal, Slot&& slot, uint32_t id);
 
     /// Non-copyable / Non-movable
-    SharedConnectionData(const SharedConnectionData&) = delete;
-    SharedConnectionData(SharedConnectionData&&) = delete;
-    SharedConnectionData& operator=(const SharedConnectionData&) = delete;
-    SharedConnectionData& operator=(SharedConnectionData&&) = delete;
+    ConnectionData(const ConnectionData&) = delete;
+    ConnectionData(ConnectionData&&) = delete;
+    ConnectionData& operator=(const ConnectionData&) = delete;
+    ConnectionData& operator=(ConnectionData&&) = delete;
 
     /// Call the slot.
     template <typename... Args>
@@ -324,25 +394,44 @@ public:
     /// Get the id of the connection.
     uint32_t id() const;
 
+    /// Disconnect from the signal.
+    bool disconnect();
+
+    /// Update the signal in the event that it has moved.
+    void updateSignal(Signal<SlotProto>* signal);
+
 private:
     using StateLock = std::lock_guard<std::mutex>;
 
+    ConnectionData(Signal<SlotProto>* signal, Slot&& slot, uint32_t id);
+
     mutable std::mutex _stateMutex;
+    Signal<SlotProto>* _signal;
     bool _valid{true};
     Slot _slot;
     uint32_t _id;
 };
 
 template <typename Ret, typename... Params>
-inline Connection<Ret(Params...)>::SharedConnectionData::SharedConnectionData(Slot&& slot, uint32_t id)
-: _slot{std::move(slot)}
+inline auto Connection<Ret(Params...)>::ConnectionData::buildConnection(Signal<SlotProto>* signal,
+                                                                        Slot&& slot,
+                                                                        uint32_t id) -> std::shared_ptr<ConnectionData>
+{
+    /// Can't use make_shared as the construtor is private. May convert to the struct work around in the future.
+    return std::shared_ptr<ConnectionData>(new ConnectionData(signal, std::move(slot), id));
+}
+
+template <typename Ret, typename... Params>
+inline Connection<Ret(Params...)>::ConnectionData::ConnectionData(Signal<SlotProto>* signal, Slot&& slot, uint32_t id)
+: _signal{signal}
+, _slot{std::move(slot)}
 , _id{id}
 {
 }
 
 template <typename Ret, typename... Params>
 template <typename... Args>
-inline void Connection<Ret(Params...)>::SharedConnectionData::call(Args... args)
+inline void Connection<Ret(Params...)>::ConnectionData::call(Args... args)
 {
     StateLock lock{_stateMutex};
     assert(_valid);
@@ -350,26 +439,40 @@ inline void Connection<Ret(Params...)>::SharedConnectionData::call(Args... args)
 }
 
 template <typename Ret, typename... Params>
-inline bool Connection<Ret(Params...)>::SharedConnectionData::valid() const
+inline bool Connection<Ret(Params...)>::ConnectionData::valid() const
 {
     StateLock lock{_stateMutex};
     return _valid;
 }
 
 template <typename Ret, typename... Params>
-inline void Connection<Ret(Params...)>::SharedConnectionData::invalidate()
+inline void Connection<Ret(Params...)>::ConnectionData::invalidate()
 {
     StateLock lock{_stateMutex};
     _valid = false;
 }
 
 template <typename Ret, typename... Params>
-inline uint32_t Connection<Ret(Params...)>::SharedConnectionData::id() const
+inline uint32_t Connection<Ret(Params...)>::ConnectionData::id() const
 {
     StateLock lock{_stateMutex};
     return _id;
 }
 
-/// ]]] Connection::SharedConnectionData --------------------------------------
+template <typename Ret, typename... Params>
+inline void Connection<Ret(Params...)>::ConnectionData::updateSignal(Signal<SlotProto>* signal)
+{
+    StateLock lock{_stateMutex};
+    _signal = signal;
+}
+
+template <typename Ret, typename... Params>
+inline bool Connection<Ret(Params...)>::ConnectionData::disconnect()
+{
+    auto connection = Connection{this->shared_from_this()};
+    return _signal->disconnect(connection);
+}
+
+/// ]]] Connection::ConnectionData --------------------------------------
 
 } // namespace moment
