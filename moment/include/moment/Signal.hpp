@@ -240,7 +240,7 @@ template <typename Ret, typename... Params>
 inline Connection<Ret(Params...)> Signal<Ret(Params...)>::connectLocked(const StateLock&, Slot&& slot)
 {
     assert(_valid);
-    static uint32_t id = 0u;
+    static std::atomic<uint64_t> id{0u};
     auto connection = ConnectionData::buildConnection(this, std::move(slot), id++);
     _connections.push_back(connection);
     return {connection};

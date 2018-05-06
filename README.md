@@ -1,6 +1,6 @@
 # moment
 
-A header only c++14 signal library.
+A header only c++14 signal library. See [Signal.hpp](moment/include/moment/Signal.hpp).
 
 Allows users to define signals that can be connected to via labdas or member functions. When a signal is called it notifies all connected slots.
 
