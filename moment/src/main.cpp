@@ -2,9 +2,9 @@
 
 #include <moment/Signal.hpp>
 
-class Emmiter {
+class Emitter {
 public:
-    ~Emmiter() { onDestroy(); }
+    ~Emitter() { onDestroy(); }
 
     void print(int x) { onPrint(x); }
 
@@ -14,7 +14,7 @@ public:
 
 class Receiver {
 public:
-    void onEmmiterDestroyed() { std::cout << "Emmiter::OnDestroy signal called." << std::endl; }
+    void onEmitterDestroyed() { std::cout << "Emitter::OnDestroy signal called." << std::endl; }
 
     void onPrint() { /* Never called */ }
     void onPrint(int x) { std::cout << x << std::endl; }
@@ -53,23 +53,23 @@ int main(int /*argv*/, char** /*argc*/)
     ////////////////////////
     Receiver receiver{};
     {
-        Emmiter emmiter{};
+        Emitter emitter{};
 
         // Connect a lambda
-        emmiter.onDestroy.connect([]() { std::cout << "Emmiter::OnDestroy signal called." << std::endl; });
+        emitter.onDestroy.connect([]() { std::cout << "Emitter::OnDestroy signal called." << std::endl; });
 
         // Connect a member function
-        emmiter.onDestroy.connect(&receiver, &Receiver::onEmmiterDestroyed);
+        emitter.onDestroy.connect(&receiver, &Receiver::onEmitterDestroyed);
     } // calls Emitter::onDestroy() thus calling both the lambda and the member function
 
     /////////////////////////////////////////////////////////////////////////////
     // Signal and classes                                                      //
     // connecting to a signal when a member function has overloaded parameters //
     /////////////////////////////////////////////////////////////////////////////
-    Emmiter emmiter{};
+    Emitter emitter{};
     // Connect a member function that has overloads
-    emmiter.onPrint.connect(&receiver, std::mem_fn<void(int)>(&Receiver::onPrint));
-    emmiter.print(42); // Calls receiver.onPrint(int)
+    emitter.onPrint.connect(&receiver, std::mem_fn<void(int)>(&Receiver::onPrint));
+    emitter.print(42); // Calls receiver.onPrint(int)
 
     return 0;
 }

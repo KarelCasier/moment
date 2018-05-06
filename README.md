@@ -24,7 +24,7 @@ Output:
 A little more complex now, we can have a signal in a class and bind that signal to a member function of another class:
 
 ```cpp
-struct Emmiter {
+struct Emitter {
     void event() { onEvent(); }
 
     moment::Signal<void()> onEvent;
@@ -34,10 +34,10 @@ struct Receiver {
     void onEvent() { std::cout << "Event Occured!" << std::endl; }
 };
 
-Emmiter emmiter;
+Emitter emitter;
 Receiver receiver;
-emmiter.onEvent.connect(&receiver, std::mem_fn<void()>(&Receiver::onEvent));
-emmiter.event();
+emitter.onEvent.connect(&receiver, std::mem_fn<void()>(&Receiver::onEvent));
+emitter.event();
 ```
 
 Output:
